@@ -264,6 +264,14 @@ def domain_from_url(url: str) -> str:
     from urllib.parse import urlparse
     host = urlparse(url).hostname or ""
     parts = host.split(".")
-    if len(parts) > 2:
-        return ".".join(parts[-2:])
-    return host
+    if len(parts) <= 2:
+        return host
+    # Handle two-part TLDs: .co.uk, .com.au, .co.jp, .com.br, etc.
+    two_part_tlds = {"co.uk", "com.au", "co.nz", "co.jp", "co.kr", "com.br",
+                     "co.za", "co.il", "com.sg", "com.tw", "com.ar", "com.uy",
+                     "com.mx", "com.pe", "com.bo", "com.co", "co.ke", "com.pl",
+                     "org.il", "org.uk", "net.au", "com.es", "co.in"}
+    suffix = ".".join(parts[-2:])
+    if suffix in two_part_tlds:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
