@@ -28,8 +28,9 @@ def main():
     p_sites.add_argument("--limit", type=int, default=50)
 
     # search
-    p_search = sub.add_parser("search", help="Google search filtered to supported sites", parents=[_common])
-    p_search.add_argument("query", nargs="+", help="Search query")
+    p_search = sub.add_parser("search", help="Search or filter URLs to supported sites", parents=[_common])
+    p_search.add_argument("query", nargs="*", help="Search query (Brave API) or URLs to filter")
+    p_search.add_argument("--urls", nargs="*", help="URLs to filter against supported sites")
     p_search.add_argument("--site", type=str, default=None, help="Limit to specific domain")
     p_search.add_argument("--limit", type=int, default=20)
 
@@ -38,6 +39,7 @@ def main():
     p_fetch.add_argument("url", help="Article URL")
     p_fetch.add_argument("--out-dir", type=Path, default=Path("."))
     p_fetch.add_argument("--no-images", action="store_true")
+    p_fetch.add_argument("--incremental", action="store_true", help="Skip if already fetched")
 
     # batch
     p_batch = sub.add_parser("batch", help="Batch fetch multiple URLs", parents=[_common])
@@ -46,6 +48,7 @@ def main():
     p_batch.add_argument("--out-dir", type=Path, default=Path("./articles"))
     p_batch.add_argument("--no-images", action="store_true")
     p_batch.add_argument("--concurrency", type=int, default=5)
+    p_batch.add_argument("--incremental", action="store_true", help="Skip already fetched URLs")
 
     # install-browser
     sub.add_parser("install-browser", help="Install Playwright Chromium", parents=[_common])
@@ -66,6 +69,12 @@ def main():
     p_crawl.add_argument("--no-images", action="store_true")
     p_crawl.add_argument("--concurrency", type=int, default=3)
     p_crawl.add_argument("--progress", action="store_true", help="Emit progress to stderr")
+    p_crawl.add_argument("--incremental", action="store_true", help="Skip already fetched URLs")
+
+    # history
+    p_hist = sub.add_parser("history", help="Show fetch history", parents=[_common])
+    p_hist.add_argument("--domain", type=str, default=None)
+    p_hist.add_argument("--limit", type=int, default=50)
 
     args = parser.parse_args()
     if not args.command:
@@ -135,6 +144,8 @@ async def _dispatch(args) -> dict:
         return await _cmd_discover(args)
     if args.command == "crawl":
         return await _cmd_crawl(args)
+    if args.command == "history":
+        return _cmd_history(args)
     return {"ok": False, "error": f"unknown command: {args.command}"}
 
 
@@ -230,6 +241,12 @@ async def _cmd_crawl(args) -> dict:
     return result
 
 
+def _cmd_history(args) -> dict:
+    from .history import get_history
+    records = get_history(domain=args.domain, limit=args.limit)
+    return {"ok": True, "count": len(records), "history": records}
+
+
 def _cmd_sites(args) -> dict:
     js_path = args.sites_js or SITES_JS_DEFAULT
     sites = get_sites_map(js_path)
@@ -250,40 +267,53 @@ def _cmd_sites(args) -> dict:
 
 
 async def _cmd_search(args) -> dict:
-    from .search import search_across_sites, search_sites
+    from .search import search_sites, filter_urls
 
     js_path = args.sites_js or SITES_JS_DEFAULT
     sites = get_sites_map(js_path)
     supported = set(sites.keys())
-    query = " ".join(args.query)
 
-    if args.site:
-        results = search_sites(query, supported, args.limit, site_filter=args.site)
-    else:
-        results = search_across_sites(query, supported, args.limit)
+    # Mode 1: Filter provided URLs
+    if args.urls:
+        results = filter_urls(args.urls, supported)
+        return {"ok": True, "mode": "filter", "count": len(results), "results": results}
 
-    return {
-        "ok": True,
-        "query": query,
-        "count": len(results),
-        "results": results,
-    }
+    # Mode 2: Brave Search API
+    query = " ".join(args.query) if args.query else ""
+    if not query:
+        return {"ok": False, "error": "provide --urls to filter or a search query (requires BRAVE_API_KEY)"}
+
+    results = search_sites(query, supported, args.limit, site_filter=args.site)
+    if not results:
+        return {
+            "ok": True,
+            "query": query,
+            "count": 0,
+            "results": [],
+            "hint": "No results. Set BRAVE_API_KEY for search, or use --urls to filter agent-provided URLs.",
+        }
+
+    return {"ok": True, "query": query, "count": len(results), "results": results}
 
 
 async def _cmd_fetch(args) -> dict:
     from .extract import extract_article, article_to_markdown, download_images
     from .strategy import fetch_with_retries
+    from .history import is_fetched, mark_fetched
 
     js_path = args.sites_js or SITES_JS_DEFAULT
     sites = get_sites_map(js_path)
     domain = domain_from_url(args.url)
     strategy = sites.get(domain)
 
-    html, status = await fetch_with_retries(args.url, strategy)
+    if getattr(args, 'incremental', False) and is_fetched(args.url):
+        return {"ok": True, "skipped": True, "reason": "already_fetched", "url": args.url, "domain": domain}
+
+    html, status, dom_result = await fetch_with_retries(args.url, strategy)
     if status != 200:
         return {"ok": False, "error": f"HTTP {status}", "url": args.url, "domain": domain}
 
-    article = extract_article(html, args.url)
+    article = extract_article(html, args.url, dom_result=dom_result)
     if not article["text"]:
         return {"ok": False, "error": "extraction_failed", "url": args.url, "domain": domain}
 
@@ -300,6 +330,8 @@ async def _cmd_fetch(args) -> dict:
     md_path = out_dir / slug / f"{slug}.md"
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(md, encoding="utf-8")
+
+    mark_fetched(args.url, domain, article["title"], str(md_path))
 
     return {
         "ok": True,
@@ -340,10 +372,10 @@ async def _cmd_batch(args) -> dict:
                 domain = domain_from_url(url)
                 strategy = sites.get(domain)
                 try:
-                    html, status = await fetch_with_retries(url, strategy, client)
+                    html, status, dom_result = await fetch_with_retries(url, strategy, client)
                     if status != 200:
                         return {"ok": False, "url": url, "error": f"HTTP {status}"}
-                    article = extract_article(html, url)
+                    article = extract_article(html, url, dom_result=dom_result)
                     if not article["text"]:
                         return {"ok": False, "url": url, "error": "extraction_failed"}
                     slug = _slugify(article["title"] or domain)

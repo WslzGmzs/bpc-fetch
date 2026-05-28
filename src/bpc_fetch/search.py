@@ -1,34 +1,36 @@
-"""Search for articles on BPC-supported sites."""
+"""Filter URLs to supported sites + optional Brave Search API."""
 import os
 from urllib.parse import urlparse
 
 import httpx
 
+from .sites import domain_from_url
 
-def search_sites(
+
+def filter_urls(urls: list[str], supported_domains: set[str]) -> list[dict]:
+    """Filter a list of URLs to only those on supported paywall sites."""
+    results = []
+    seen = set()
+    for url in urls:
+        if url in seen:
+            continue
+        domain = domain_from_url(url)
+        if domain in supported_domains:
+            seen.add(url)
+            results.append({"url": url, "domain": domain, "supported": True})
+    return results
+
+
+def search_brave(
     query: str,
     supported_domains: set[str],
     limit: int = 20,
     site_filter: str | None = None,
 ) -> list[dict]:
-    """Search and filter results to supported paywall sites.
-
-    Uses Brave Search API if BRAVE_API_KEY is set, otherwise DDG.
-    """
-    brave_key = os.environ.get("BRAVE_API_KEY", "")
-    if brave_key:
-        return _brave_search(query, supported_domains, limit, site_filter, brave_key)
-    return _ddg_search(query, supported_domains, limit, site_filter)
-
-
-def _brave_search(
-    query: str,
-    supported_domains: set[str],
-    limit: int,
-    site_filter: str | None,
-    api_key: str,
-) -> list[dict]:
-    """Search via Brave Search API (free tier: 2000/month)."""
+    """Search via Brave Search API. Requires BRAVE_API_KEY env var."""
+    api_key = os.environ.get("BRAVE_API_KEY", "")
+    if not api_key:
+        return []
     search_query = f"site:{site_filter} {query}" if site_filter else query
     results: list[dict] = []
     try:
@@ -42,12 +44,12 @@ def _brave_search(
             data = resp.json()
             for item in data.get("web", {}).get("results", []):
                 url = item.get("url", "")
-                domain = _get_domain(url)
+                domain = domain_from_url(url)
                 if site_filter:
                     if domain == site_filter or domain.endswith(f".{site_filter}"):
-                        results.append(_format_result(item, domain))
+                        results.append(_format(item, domain))
                 elif domain in supported_domains:
-                    results.append(_format_result(item, domain))
+                    results.append(_format(item, domain))
                 if len(results) >= limit:
                     break
     except Exception:
@@ -55,74 +57,20 @@ def _brave_search(
     return results[:limit]
 
 
-def _ddg_search(
-    query: str,
-    supported_domains: set[str],
-    limit: int,
-    site_filter: str | None,
-) -> list[dict]:
-    """Fallback: DuckDuckGo search."""
-    search_query = f"site:{site_filter} {query}" if site_filter else query
-    results: list[dict] = []
-    try:
-        import warnings
-        warnings.filterwarnings("ignore")
-        from duckduckgo_search import DDGS
-        with DDGS() as ddgs:
-            for r in ddgs.text(search_query, max_results=min(limit * 3, 60)):
-                url = r.get("href", "")
-                domain = _get_domain(url)
-                if site_filter:
-                    if domain == site_filter or domain.endswith(f".{site_filter}"):
-                        results.append({"title": r.get("title", ""), "url": url, "domain": domain, "snippet": r.get("body", "")})
-                elif domain in supported_domains:
-                    results.append({"title": r.get("title", ""), "url": url, "domain": domain, "snippet": r.get("body", "")})
-                if len(results) >= limit:
-                    break
-    except Exception:
-        pass
-    return results[:limit]
-
-
-def search_across_sites(
+def search_sites(
     query: str,
     supported_domains: set[str],
     limit: int = 20,
+    site_filter: str | None = None,
 ) -> list[dict]:
-    """Search with optional fallback to site-specific queries."""
-    results = search_sites(query, supported_domains, limit)
-    if len(results) < limit:
-        top_sites = ["nytimes.com", "washingtonpost.com", "ft.com", "economist.com",
-                     "bloomberg.com", "wsj.com", "theatlantic.com", "newyorker.com",
-                     "wired.com", "nature.com", "science.org", "foreignaffairs.com"]
-        seen_urls = {r["url"] for r in results}
-        for site in top_sites:
-            if len(results) >= limit:
-                break
-            more = search_sites(query, supported_domains, 5, site_filter=site)
-            for r in more:
-                if r.get("url") and r["url"] not in seen_urls:
-                    results.append(r)
-                    seen_urls.add(r["url"])
-    return results[:limit]
+    """Search supported sites. Uses Brave API if available, otherwise returns empty."""
+    return search_brave(query, supported_domains, limit, site_filter)
 
 
-def _format_result(item: dict, domain: str) -> dict:
+def _format(item: dict, domain: str) -> dict:
     return {
         "title": item.get("title", ""),
         "url": item.get("url", ""),
         "domain": domain,
         "snippet": item.get("description", ""),
     }
-
-
-def _get_domain(url: str) -> str:
-    host = urlparse(url).hostname or ""
-    parts = host.split(".")
-    if len(parts) > 2:
-        cctlds = ("au", "uk", "br", "il", "za", "nz", "sg", "jp", "tw", "in",
-                  "ar", "uy", "mx", "pe", "bo", "cl", "co", "ke")
-        if parts[-1] in cctlds:
-            return ".".join(parts[-3:])
-        return ".".join(parts[-2:])
-    return host

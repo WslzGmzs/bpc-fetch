@@ -77,10 +77,10 @@ async def crawl(
                     _emit_progress(idx + 1, total, url)
 
                 try:
-                    html, status = await fetch_with_retries(url, strategy, client)
+                    html, status, dom_result = await fetch_with_retries(url, strategy, client)
                     if status != 200:
                         return {"ok": False, "url": url, "error": f"HTTP {status}"}
-                    article = extract_article(html, url)
+                    article = extract_article(html, url, dom_result=dom_result)
                     if not article["text"]:
                         return {"ok": False, "url": url, "error": "extraction_failed"}
                     slug = _slugify(article["title"] or domain)

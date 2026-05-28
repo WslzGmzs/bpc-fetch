@@ -81,10 +81,11 @@ async def fetch_with_retries(
     strategy: SiteStrategy | None = None,
     client: httpx.AsyncClient | None = None,
     use_browser: bool | None = None,
-) -> tuple[str, int]:
+) -> tuple[str, int, dict | None]:
     """Try primary strategy, fallback to googlebot, then browser, then archive.org.
 
     use_browser: True=force browser, False=skip browser, None=auto (block_js only).
+    Returns (html, status_code, dom_result_or_None).
     """
     should_browser = use_browser if use_browser is not None else (
         strategy is not None and strategy.bypass_type() == "block_js"
@@ -96,38 +97,77 @@ async def fetch_with_retries(
     try:
         html, status = await fetch_page(url, strategy, client)
         if status == 200 and _has_content(html):
-            return html, status
+            return html, status, None
 
         if not strategy or strategy.useragent != "googlebot":
             fallback = SiteStrategy(domain=(strategy.domain if strategy else ""), useragent="googlebot")
             html, status = await fetch_page(url, fallback, client)
             if status == 200 and _has_content(html):
-                return html, status
+                return html, status, None
 
-        # Browser fallback for block_js sites
+        # Browser fallback — also extracts DOM directly
         browser_html = ""
+        dom_result = None
         if should_browser and strategy:
             try:
-                from .browser import fetch_with_browser
-                browser_html, status = await fetch_with_browser(url, strategy)
-                if status == 200 and _has_content(browser_html):
-                    return browser_html, status
+                from .browser import fetch_with_browser, BrowserPool, extract_article_dom
+                pool = BrowserPool(max_contexts=1)
+                await pool.start()
+                try:
+                    async with pool.page() as page:
+                        from .browser import _build_route_patterns
+                        route_patterns = _build_route_patterns(strategy)
+                        for pattern in route_patterns:
+                            try:
+                                await page.route(pattern, lambda route: route.abort())
+                            except Exception:
+                                pass
+                        for provider in ["piano.io", "tinypass.com", "poool.fr", "zephr.com", "pelcro.com", "sophi.io"]:
+                            try:
+                                await page.route(f"**/*{provider}*", lambda route: route.abort())
+                            except Exception:
+                                pass
+                        if strategy.useragent_custom:
+                            await page.set_extra_http_headers({"User-Agent": strategy.useragent_custom})
+                        try:
+                            resp = await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                            status = resp.status if resp else 0
+                        except Exception:
+                            status = 0
+                        try:
+                            await page.wait_for_selector("article, [data-article], .article-body", timeout=8000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(2000)
+                        await page.evaluate("""() => {
+                            document.querySelectorAll('[class*="paywall"], [class*="gate"], [class*="piano"]').forEach(el => { el.style.display = 'none'; });
+                            document.querySelectorAll('article, [data-article], .article-body').forEach(el => { el.style.overflow = 'visible'; el.style.maxHeight = 'none'; });
+                            document.body.style.overflow = 'auto';
+                        }""")
+                        await page.wait_for_timeout(500)
+                        dom_result = await extract_article_dom(page)
+                        browser_html = await page.content()
+                finally:
+                    await pool.stop()
+                if dom_result and dom_result.get("text") and len(dom_result["text"]) > 200:
+                    return browser_html, 200, dom_result
+                if browser_html and _has_content(browser_html):
+                    return browser_html, 200, None
             except Exception:
                 pass
 
-        # Archive.org fallback — best for server-side paywalls
+        # Archive.org fallback
         try:
             archive_url = f"https://web.archive.org/web/2/{url}"
             resp = await client.get(archive_url, headers={"User-Agent": UA_NORMAL}, follow_redirects=True)
             if resp.status_code == 200 and _has_content(resp.text) and _has_full_article(resp.text):
-                return resp.text, 200
+                return resp.text, 200, None
         except Exception:
             pass
 
-        # Return best available (browser > http)
         if browser_html and _has_content(browser_html):
-            return browser_html, 200
-        return html, status
+            return browser_html, 200, dom_result
+        return html, status, None
     finally:
         if own_client:
             await client.aclose()

@@ -11,8 +11,22 @@ from markdownify import markdownify
 from .strategy import UA_NORMAL, TIMEOUT
 
 
-def extract_article(html: str, url: str) -> dict:
-    """Extract article content from HTML. Returns dict with title, text, markdown, images."""
+def extract_article(html: str, url: str, dom_result: dict | None = None) -> dict:
+    """Extract article content from HTML. Returns dict with title, text, markdown, images.
+
+    If dom_result is provided (from browser DOM extraction), use it directly.
+    """
+    if dom_result and dom_result.get("text") and len(dom_result["text"]) > 200:
+        images = [img["src"] for img in dom_result.get("images", [])]
+        return {
+            "title": dom_result.get("title", ""),
+            "author": "",
+            "date": "",
+            "text": dom_result["text"],
+            "images": images,
+            "url": url,
+        }
+
     result = trafilatura.extract(
         html,
         url=url,

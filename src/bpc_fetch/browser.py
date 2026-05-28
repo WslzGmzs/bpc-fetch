@@ -170,3 +170,47 @@ async def fetch_with_browser(
         if own_pool:
             await pool.stop()
 
+
+async def extract_article_dom(page: Page) -> dict | None:
+    """Extract article content directly from page DOM. More reliable than trafilatura for JS-rendered pages."""
+    return await page.evaluate("""() => {
+        // Find main article container
+        const selectors = [
+            'article[data-body-id]', 'article .article-body', 'article .story-body',
+            '.article__body', '.post-content', '.entry-content',
+            '[data-component="body"]', '.story-text', '.article-text',
+            'article'
+        ];
+        let container = null;
+        for (const sel of selectors) {
+            container = document.querySelector(sel);
+            if (container && container.innerText.length > 200) break;
+        }
+        if (!container) return null;
+
+        // Extract paragraphs
+        const paragraphs = [];
+        container.querySelectorAll('p').forEach(p => {
+            const text = p.innerText.trim();
+            if (text.length > 20) paragraphs.push(text);
+        });
+
+        // Extract images
+        const images = [];
+        container.querySelectorAll('img[src]').forEach(img => {
+            const src = img.src;
+            if (src && !src.includes('pixel') && !src.includes('tracking') && !src.includes('logo') && !src.includes('icon')) {
+                const alt = img.alt || '';
+                images.push({src, alt});
+            }
+        });
+
+        // Title
+        const title = document.querySelector('h1')?.innerText?.trim() || document.title.split('|')[0].trim();
+
+        const text = paragraphs.join('\\n\\n');
+        if (text.length < 100) return null;
+
+        return {title, text, images, paragraph_count: paragraphs.length};
+    }""")
+

@@ -6,7 +6,7 @@ install-local:
 
 build-win:
 	uv pip install pyinstaller
-	python build/build_win.py
+	python packaging/build_win.py
 
 clean:
 	rm -rf dist/ build/__pycache__/ *.egg-info/
