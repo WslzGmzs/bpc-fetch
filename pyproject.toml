@@ -13,6 +13,7 @@ dependencies = [
     "markdownify>=0.14",
     "beautifulsoup4>=4.12",
     "duckduckgo-search>=8.0",
+    "playwright>=1.40",
 ]
 
 [project.scripts]

@@ -47,6 +47,26 @@ def main():
     p_batch.add_argument("--no-images", action="store_true")
     p_batch.add_argument("--concurrency", type=int, default=5)
 
+    # install-browser
+    sub.add_parser("install-browser", help="Install Playwright Chromium", parents=[_common])
+
+    # discover
+    p_disc = sub.add_parser("discover", help="Discover recent articles from a site", parents=[_common])
+    p_disc.add_argument("domain", help="Site domain (e.g. ft.com)")
+    p_disc.add_argument("--since", type=str, default="7d", help="Time filter: today, Nd, YYYY-MM-DD")
+    p_disc.add_argument("--limit", type=int, default=20)
+
+    # crawl
+    p_crawl = sub.add_parser("crawl", help="Search + time filter + batch fetch", parents=[_common])
+    p_crawl.add_argument("query", nargs="+", help="Search query")
+    p_crawl.add_argument("--sites", type=str, default=None, help="Comma-separated domains to crawl")
+    p_crawl.add_argument("--since", type=str, default="7d", help="Time filter: today, Nd, YYYY-MM-DD")
+    p_crawl.add_argument("--limit", type=int, default=20)
+    p_crawl.add_argument("--out-dir", type=Path, default=Path("./articles"))
+    p_crawl.add_argument("--no-images", action="store_true")
+    p_crawl.add_argument("--concurrency", type=int, default=3)
+    p_crawl.add_argument("--progress", action="store_true", help="Emit progress to stderr")
+
     args = parser.parse_args()
     if not args.command:
         parser.print_help()
@@ -54,12 +74,48 @@ def main():
 
     try:
         result = asyncio.run(_dispatch(args))
+        result = _enrich_result(result, args)
         print(json.dumps(result, ensure_ascii=False, indent=None if args.compact else 2))
     except KeyboardInterrupt:
         sys.exit(130)
     except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
+        err = {"ok": False, "error": str(e), "recovery_command": "bpc-fetch doctor --compact"}
+        print(json.dumps(err))
         sys.exit(1)
+
+
+def _enrich_result(result: dict, args) -> dict:
+    """Add next_command and recovery_command to all results."""
+    cmd = args.command
+    if not result.get("ok"):
+        if "recovery_command" not in result:
+            result["recovery_command"] = "bpc-fetch doctor --compact"
+        return result
+
+    if cmd == "doctor":
+        result["next_command"] = "bpc-fetch sites --limit 10 --compact"
+    elif cmd == "sites":
+        if result.get("sites"):
+            d = result["sites"][0]["domain"]
+            result["next_command"] = f"bpc-fetch discover {d} --since 7d --compact"
+    elif cmd == "search":
+        if result.get("results"):
+            urls = " ".join(f'"{r["url"]}"' for r in result["results"][:5])
+            result["next_command"] = f"bpc-fetch batch {urls} --out-dir ./articles --compact"
+            result["fetchable_count"] = len(result["results"])
+    elif cmd == "discover":
+        if result.get("articles"):
+            urls = " ".join(f'"{a["url"]}"' for a in result["articles"][:10])
+            result["next_command"] = f"bpc-fetch batch {urls} --out-dir ./articles --compact"
+            result["fetch_command"] = f"bpc-fetch batch {urls} --out-dir ./articles --compact"
+    elif cmd == "fetch":
+        result["next_command"] = f"bpc-fetch discover {result.get('domain', '')} --since today --compact"
+    elif cmd == "crawl":
+        result["next_command"] = None
+    elif cmd == "batch":
+        result["next_command"] = None
+
+    return result
 
 
 async def _dispatch(args) -> dict:
@@ -73,12 +129,19 @@ async def _dispatch(args) -> dict:
         return await _cmd_fetch(args)
     if args.command == "batch":
         return await _cmd_batch(args)
+    if args.command == "install-browser":
+        return _cmd_install_browser(args)
+    if args.command == "discover":
+        return await _cmd_discover(args)
+    if args.command == "crawl":
+        return await _cmd_crawl(args)
     return {"ok": False, "error": f"unknown command: {args.command}"}
 
 
 def _cmd_doctor(args) -> dict:
     issues = []
     js_path = args.sites_js or SITES_JS_DEFAULT
+    site_count = 0
     if not js_path.exists():
         issues.append(f"sites.js not found at {js_path}")
     else:
@@ -99,15 +162,66 @@ def _cmd_doctor(args) -> dict:
         httpx_ok = False
         issues.append("httpx not installed")
 
+    pw_ok = False
+    pw_info = ""
+    try:
+        from playwright.async_api import async_playwright
+        pw_ok = True
+        import importlib.metadata
+        pw_info = importlib.metadata.version("playwright")
+    except (ImportError, Exception):
+        issues.append("playwright not installed (run: pip install playwright)")
+
+    chromium_ok = False
+    if pw_ok:
+        import subprocess
+        r = subprocess.run(["playwright", "install", "--dry-run", "chromium"], capture_output=True, text=True)
+        chromium_ok = "is already installed" in r.stdout or r.returncode == 0
+
     return {
         "ok": len(issues) == 0,
         "sites_js": str(js_path),
         "sites_js_exists": js_path.exists(),
-        "site_count": site_count if js_path.exists() else 0,
+        "site_count": site_count,
         "trafilatura": traf_ok,
         "httpx": httpx_ok,
+        "playwright": pw_ok,
+        "playwright_version": pw_info,
+        "chromium_installed": chromium_ok,
         "issues": issues,
     }
+
+
+def _cmd_install_browser(args) -> dict:
+    import subprocess
+    r = subprocess.run(["playwright", "install", "chromium"], capture_output=True, text=True)
+    if r.returncode == 0:
+        return {"ok": True, "message": "Chromium installed", "output": r.stdout.strip()[-200:]}
+    return {"ok": False, "error": r.stderr.strip()[-200:], "recovery_command": "pip install playwright && playwright install chromium"}
+
+
+async def _cmd_discover(args) -> dict:
+    from .discover import discover
+    result = await discover(args.domain, since=args.since, limit=args.limit)
+    return result
+
+
+async def _cmd_crawl(args) -> dict:
+    from .crawl import crawl
+    query = " ".join(args.query)
+    sites_filter = args.sites.split(",") if args.sites else None
+    result = await crawl(
+        query=query,
+        sites_filter=sites_filter,
+        since=args.since,
+        limit=args.limit,
+        out_dir=args.out_dir,
+        no_images=args.no_images,
+        concurrency=args.concurrency,
+        progress=args.progress,
+        sites_js=args.sites_js,
+    )
+    return result
 
 
 def _cmd_sites(args) -> dict:

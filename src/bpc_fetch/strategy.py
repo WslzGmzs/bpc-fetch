@@ -73,8 +73,20 @@ async def fetch_page(url: str, strategy: SiteStrategy | None = None, client: htt
             await client.aclose()
 
 
-async def fetch_with_retries(url: str, strategy: SiteStrategy | None = None, client: httpx.AsyncClient | None = None) -> tuple[str, int]:
-    """Try primary strategy, fallback to googlebot, then archive.org."""
+async def fetch_with_retries(
+    url: str,
+    strategy: SiteStrategy | None = None,
+    client: httpx.AsyncClient | None = None,
+    use_browser: bool | None = None,
+) -> tuple[str, int]:
+    """Try primary strategy, fallback to googlebot, then browser, then archive.org.
+
+    use_browser: True=force browser, False=skip browser, None=auto (block_js only).
+    """
+    should_browser = use_browser if use_browser is not None else (
+        strategy is not None and strategy.bypass_type() == "block_js"
+    )
+
     own_client = client is None
     if own_client:
         client = httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT)
@@ -83,14 +95,23 @@ async def fetch_with_retries(url: str, strategy: SiteStrategy | None = None, cli
         if status == 200 and _has_content(html):
             return html, status
 
-        # Try googlebot UA
         if not strategy or strategy.useragent != "googlebot":
             fallback = SiteStrategy(domain=(strategy.domain if strategy else ""), useragent="googlebot")
             html, status = await fetch_page(url, fallback, client)
             if status == 200 and _has_content(html):
                 return html, status
 
-        # Try archive.org Wayback Machine
+        # Browser fallback for block_js sites
+        if should_browser and strategy:
+            try:
+                from .browser import fetch_with_browser
+                html, status = await fetch_with_browser(url, strategy)
+                if status == 200 and _has_content(html):
+                    return html, status
+            except Exception:
+                pass
+
+        # Archive.org fallback
         try:
             archive_url = f"https://web.archive.org/web/2/{url}"
             resp = await client.get(archive_url, headers={"User-Agent": UA_NORMAL}, follow_redirects=True)
