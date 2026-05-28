@@ -16,6 +16,10 @@
   <a href="#致谢">致谢</a>
 </p>
 
+<p align="center">
+  <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX%20DO-Community-blue?style=flat-square" alt="LINUX DO Community"></a>
+</p>
+
 ---
 
 ## 这是什么?

@@ -17,6 +17,10 @@
   <a href="#credits">Credits</a>
 </p>
 
+<p align="center">
+  <a href="https://linux.do"><img src="https://img.shields.io/badge/LINUX%20DO-Community-blue?style=flat-square" alt="LINUX DO Community"></a>
+</p>
+
 ---
 
 ## What is this?
