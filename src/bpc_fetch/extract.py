@@ -79,17 +79,30 @@ def article_to_markdown(article: dict, images_dir: str = "images") -> str:
     lines.append("")
 
     text = article["text"]
+
+    # Strip paywall markers from text
+    for marker in ["Enjoying our latest content?", "Log in or create an account to continue",
+                   "Subscribe to continue reading", "Already a subscriber?"]:
+        idx = text.find(marker)
+        if idx > 0:
+            text = text[:idx].rstrip()
+
+    # Embed first image as hero, rest at end
     if article.get("images"):
-        for i, img_url in enumerate(article["images"][:20]):
-            fname = _image_filename(img_url, i)
-            img_ref = f"![image]({images_dir}/{fname})"
-            if i == 0 and not text.startswith("!["):
-                lines.append(img_ref)
-                lines.append("")
-            else:
-                text += f"\n\n{img_ref}"
+        fname = _image_filename(article["images"][0], 0)
+        lines.append(f"![image]({images_dir}/{fname})")
+        lines.append("")
 
     lines.append(text)
+
+    # Remaining images at end
+    if article.get("images") and len(article["images"]) > 1:
+        lines.append("")
+        for i, img_url in enumerate(article["images"][1:], 1):
+            fname = _image_filename(img_url, i)
+            lines.append(f"![image]({images_dir}/{fname})")
+            lines.append("")
+
     return "\n".join(lines)
 
 
@@ -148,18 +161,44 @@ def _extract_date(metadata: str | None) -> str:
 
 
 def _extract_image_urls(html: str, base_url: str) -> list[str]:
-    """Extract meaningful image URLs from HTML."""
+    """Extract article images only — skip UI, nav, footer, sidebar images."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, 'html.parser')
+
+    # Find article container
+    article = (
+        soup.find('article') or
+        soup.find(attrs={"data-article": True}) or
+        soup.find(class_=re.compile(r'article.body|story.body|post.content|entry.content'))
+    )
+    container = article if article else soup.find('main') or soup.body
+
+    if not container:
+        return []
+
     urls = []
     seen = set()
-    for m in re.finditer(r'<img[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE):
-        src = m.group(1)
-        if any(skip in src.lower() for skip in ["pixel", "tracking", "1x1", "logo", "icon", "avatar", "badge"]):
+    skip_patterns = ["pixel", "tracking", "1x1", "logo", "icon", "avatar", "badge",
+                     "button", "arrow", "spinner", "loading", "placeholder", "svg+xml",
+                     "data:image", "gravatar", "emoji", "widget"]
+
+    for img in container.find_all('img', src=True):
+        src = img.get('src', '')
+        if not src or any(skip in src.lower() for skip in skip_patterns):
+            continue
+        # Skip tiny images (likely icons)
+        width = img.get('width', '')
+        height = img.get('height', '')
+        if width and width.isdigit() and int(width) < 50:
+            continue
+        if height and height.isdigit() and int(height) < 50:
             continue
         full = urljoin(base_url, src)
         if full not in seen:
             seen.add(full)
             urls.append(full)
-    return urls
+
+    return urls[:20]
 
 
 def _image_filename(url: str, index: int) -> str:

@@ -96,13 +96,13 @@ async def fetch_with_retries(
         client = httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT)
     try:
         html, status = await fetch_page(url, strategy, client)
-        if status == 200 and _has_content(html):
+        if status == 200 and _has_content(html) and not _is_paywalled(html):
             return html, status, None
 
         if not strategy or strategy.useragent != "googlebot":
             fallback = SiteStrategy(domain=(strategy.domain if strategy else ""), useragent="googlebot")
             html, status = await fetch_page(url, fallback, client)
-            if status == 200 and _has_content(html):
+            if status == 200 and _has_content(html) and not _is_paywalled(html):
                 return html, status, None
 
         # Browser fallback — also extracts DOM directly
@@ -191,3 +191,23 @@ def _has_full_article(html: str) -> bool:
     paragraphs = re.findall(r'<p[^>]*>(.+?)</p>', html, re.DOTALL)
     total_text = sum(len(re.sub(r'<[^>]+>', '', p)) for p in paragraphs)
     return total_text > 800 or len(paragraphs) > 5
+
+
+def _is_paywalled(html: str) -> bool:
+    """Detect if page shows paywall truncation markers."""
+    markers = [
+        "log in or create an account to continue",
+        "subscribe to continue reading",
+        "sign in to continue",
+        "create a free account to continue",
+        "this article is for subscribers",
+        "to read the full story",
+        "register for free to continue reading",
+        "already a subscriber? sign in",
+        "want to read more?",
+        "unlock this article",
+        "premium content",
+        "members only",
+    ]
+    lower = html.lower()
+    return any(m in lower for m in markers)
