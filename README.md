@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="README_CN.md">中文文档</a> •
   <a href="#supported-sites">936 Sites</a> •
   <a href="#features">Features</a> •
   <a href="#installation">Install</a> •
