@@ -145,6 +145,7 @@ python build/build_win.py
 本工具基于以下项目的绕过逻辑构建:
 
 - **[Bypass Paywalls Clean](https://gitflic.ru/project/magnolia1234/bypass-paywalls-chrome-clean)** by [magnolia1234](https://gitflic.ru/user/magnolia1234) — 提供站点数据库和绕过策略的原始浏览器扩展. 所有 paywall 绕过研究的功劳归属于 BPC 项目维护者.
+- **[LINUX DO](https://linux.do)** — 社区支持与反馈.
 
 ## 许可证
 
