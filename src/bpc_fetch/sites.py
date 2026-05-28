@@ -1,10 +1,22 @@
 """Parse BPC extension sites.js into a strategy map."""
 import json
 import re
+import sys
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 
-SITES_JS_DEFAULT = Path.home() / "code/clis/bpc-fetch/data/sites.js"
+
+def _default_sites_js() -> Path:
+    """Locate sites.js: PyInstaller bundle → package data → home fallback."""
+    if getattr(sys, '_MEIPASS', None):
+        return Path(sys._MEIPASS) / "data" / "sites.js"
+    pkg_data = Path(__file__).parent.parent.parent / "data" / "sites.js"
+    if pkg_data.exists():
+        return pkg_data
+    return Path.home() / "code/clis/bpc-fetch/data/sites.js"
+
+
+SITES_JS_DEFAULT = _default_sites_js()
 
 
 @dataclass

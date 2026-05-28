@@ -174,9 +174,15 @@ def _cmd_doctor(args) -> dict:
 
     chromium_ok = False
     if pw_ok:
-        import subprocess
-        r = subprocess.run(["playwright", "install", "--dry-run", "chromium"], capture_output=True, text=True)
-        chromium_ok = "is already installed" in r.stdout or r.returncode == 0
+        try:
+            import subprocess
+            r = subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "--dry-run", "chromium"],
+                capture_output=True, text=True, timeout=10
+            )
+            chromium_ok = "is already installed" in r.stdout or r.returncode == 0
+        except Exception:
+            chromium_ok = False
 
     return {
         "ok": len(issues) == 0,
@@ -194,10 +200,10 @@ def _cmd_doctor(args) -> dict:
 
 def _cmd_install_browser(args) -> dict:
     import subprocess
-    r = subprocess.run(["playwright", "install", "chromium"], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], capture_output=True, text=True, timeout=300)
     if r.returncode == 0:
         return {"ok": True, "message": "Chromium installed", "output": r.stdout.strip()[-200:]}
-    return {"ok": False, "error": r.stderr.strip()[-200:], "recovery_command": "pip install playwright && playwright install chromium"}
+    return {"ok": False, "error": r.stderr.strip()[-200:], "recovery_command": "pip install playwright && python -m playwright install chromium"}
 
 
 async def _cmd_discover(args) -> dict:
