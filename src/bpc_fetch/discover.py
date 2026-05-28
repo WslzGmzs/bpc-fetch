@@ -33,26 +33,36 @@ async def discover(domain: str, since: str = "7d", limit: int = 20) -> dict:
     """Discover recent articles from domain. Returns {ok, domain, count, articles}."""
     since_dt = parse_since(since)
     articles: list[dict] = []
+    source = ""
 
     async with httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT) as client:
-        # Try RSS
         rss_articles = await _try_rss(client, domain, since_dt)
         if rss_articles:
             articles = rss_articles
+            source = "rss"
         else:
-            # Try sitemap
             sitemap_articles = await _try_sitemap(client, domain, since_dt)
             if sitemap_articles:
                 articles = sitemap_articles
+                source = "sitemap"
             else:
-                # Fallback: homepage link extraction
-                articles = await _try_homepage(client, domain, since_dt)
+                homepage_articles = await _try_homepage(client, domain, since_dt)
+                if homepage_articles:
+                    articles = homepage_articles
+                    source = "homepage"
+
+    # Browser fallback: if HTTP methods all failed, use Playwright
+    if not articles:
+        browser_articles = await _try_browser_homepage(domain, since_dt)
+        if browser_articles:
+            articles = browser_articles
+            source = "browser"
 
     articles = articles[:limit]
     return {
         "ok": True,
         "domain": domain,
-        "source": "rss" if rss_articles else ("sitemap" if not rss_articles and articles else "homepage"),
+        "source": source or "none",
         "count": len(articles),
         "articles": articles,
     }
@@ -219,3 +229,59 @@ def _parse_date(date_str: str | None) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+async def _try_browser_homepage(domain: str, since: datetime) -> list[dict]:
+    """Use Playwright to load homepage and extract article links (Cloudflare bypass)."""
+    try:
+        from .browser import BrowserPool
+    except ImportError:
+        return []
+
+    articles = []
+    try:
+        pool = BrowserPool(max_contexts=1)
+        await pool.start()
+        async with pool.page() as page:
+            await page.goto(f"https://www.{domain}/", wait_until="domcontentloaded", timeout=20000)
+            await page.wait_for_timeout(3000)
+
+            links = await page.evaluate("""(domain) => {
+                const articles = [];
+                const seen = new Set();
+                document.querySelectorAll('a[href]').forEach(a => {
+                    const href = a.href;
+                    if (!href || seen.has(href)) return;
+                    const path = new URL(href).pathname;
+                    const isArticle = path.match(/\\/\\d{4}\\/\\d{2}\\//) ||
+                        ['/article', '/story', '/news/', '/opinion/', '/world/', '/politics/', '/tech', '/science', '/business', '/finance'].some(s => path.includes(s));
+                    if (isArticle && href.includes(domain)) {
+                        const title = a.textContent.trim().substring(0, 200);
+                        if (title.length > 10) {
+                            seen.add(href);
+                            articles.push({url: href, title: title});
+                        }
+                    }
+                });
+                return articles;
+            }""", domain)
+
+            for item in links:
+                url = item.get("url", "")
+                title = item.get("title", "")
+                date_match = re.search(r"/(\d{4})/(\d{2})/(\d{2})/", url)
+                date_str = ""
+                if date_match:
+                    try:
+                        dt = datetime(int(date_match.group(1)), int(date_match.group(2)), int(date_match.group(3)), tzinfo=timezone.utc)
+                        if dt < since:
+                            continue
+                        date_str = str(dt.date())
+                    except ValueError:
+                        pass
+                articles.append({"title": title, "url": url, "date": date_str, "domain": domain})
+
+        await pool.stop()
+    except Exception:
+        pass
+    return articles

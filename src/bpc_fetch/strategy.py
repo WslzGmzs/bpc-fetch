@@ -22,15 +22,18 @@ def build_headers(strategy: SiteStrategy) -> dict[str, str]:
         "Accept-Language": "en-US,en;q=0.9",
     }
 
-    ua = strategy.useragent.lower() if strategy.useragent else ""
-    if ua == "googlebot":
-        headers["User-Agent"] = UA_GOOGLEBOT
-    elif ua == "bingbot":
-        headers["User-Agent"] = UA_BINGBOT
-    elif ua in ("facebookbot", "facebook"):
-        headers["User-Agent"] = UA_FACEBOOKBOT
+    if strategy.useragent_custom:
+        headers["User-Agent"] = strategy.useragent_custom
     else:
-        headers["User-Agent"] = UA_NORMAL
+        ua = strategy.useragent.lower() if strategy.useragent else ""
+        if ua == "googlebot":
+            headers["User-Agent"] = UA_GOOGLEBOT
+        elif ua == "bingbot":
+            headers["User-Agent"] = UA_BINGBOT
+        elif ua in ("facebookbot", "facebook"):
+            headers["User-Agent"] = UA_FACEBOOKBOT
+        else:
+            headers["User-Agent"] = UA_NORMAL
 
     ref = strategy.referer.lower() if strategy.referer else ""
     if ref == "google":
@@ -39,7 +42,7 @@ def build_headers(strategy: SiteStrategy) -> dict[str, str]:
         headers["Referer"] = REFERER_FACEBOOK
     elif ref == "twitter":
         headers["Referer"] = REFERER_TWITTER
-    elif not ua:
+    elif not strategy.useragent and not strategy.useragent_custom:
         headers["Referer"] = REFERER_GOOGLE
 
     if strategy.random_ip:
@@ -92,34 +95,38 @@ async def fetch_with_retries(
         client = httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT)
     try:
         html, status = await fetch_page(url, strategy, client)
-        if status == 200 and _has_content(html):
+        if status == 200 and _has_content(html) and _has_full_article(html):
             return html, status
 
         if not strategy or strategy.useragent != "googlebot":
             fallback = SiteStrategy(domain=(strategy.domain if strategy else ""), useragent="googlebot")
             html, status = await fetch_page(url, fallback, client)
-            if status == 200 and _has_content(html):
+            if status == 200 and _has_content(html) and _has_full_article(html):
                 return html, status
 
         # Browser fallback for block_js sites
+        browser_html = ""
         if should_browser and strategy:
             try:
                 from .browser import fetch_with_browser
-                html, status = await fetch_with_browser(url, strategy)
-                if status == 200 and _has_content(html):
-                    return html, status
+                browser_html, status = await fetch_with_browser(url, strategy)
+                if status == 200 and _has_content(browser_html) and _has_full_article(browser_html):
+                    return browser_html, status
             except Exception:
                 pass
 
-        # Archive.org fallback
+        # Archive.org fallback — best for server-side paywalls
         try:
             archive_url = f"https://web.archive.org/web/2/{url}"
             resp = await client.get(archive_url, headers={"User-Agent": UA_NORMAL}, follow_redirects=True)
-            if resp.status_code == 200 and _has_content(resp.text):
+            if resp.status_code == 200 and _has_content(resp.text) and _has_full_article(resp.text):
                 return resp.text, 200
         except Exception:
             pass
 
+        # Return best available (browser > http)
+        if browser_html and _has_content(browser_html):
+            return browser_html, 200
         return html, status
     finally:
         if own_client:
@@ -127,7 +134,7 @@ async def fetch_with_retries(
 
 
 def _has_content(html: str) -> bool:
-    """Check if HTML has meaningful article content (not just a paywall/redirect)."""
+    """Check if HTML has meaningful content (not just a paywall/redirect)."""
     if len(html) < 500:
         return False
     lower = html.lower()
@@ -136,3 +143,11 @@ def _has_content(html: str) -> bool:
     if lower.count("<p") > 3:
         return True
     return len(html) > 5000
+
+
+def _has_full_article(html: str) -> bool:
+    """Check if HTML likely contains a full article (not just first paragraph)."""
+    import re
+    paragraphs = re.findall(r'<p[^>]*>(.+?)</p>', html, re.DOTALL)
+    total_text = sum(len(re.sub(r'<[^>]+>', '', p)) for p in paragraphs)
+    return total_text > 800 or len(paragraphs) > 5

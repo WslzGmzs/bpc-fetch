@@ -12,6 +12,7 @@ class SiteStrategy:
     domain: str
     name: str = ""
     useragent: str = ""
+    useragent_custom: str = ""
     referer: str = ""
     random_ip: str = ""
     allow_cookies: bool = False
@@ -20,6 +21,8 @@ class SiteStrategy:
     group: list[str] = field(default_factory=list)
 
     def bypass_type(self) -> str:
+        if self.useragent_custom:
+            return "ua:custom"
         if self.useragent:
             return f"ua:{self.useragent}"
         if self.referer:
@@ -68,6 +71,7 @@ def _build_strategy(domain: str, name: str, props: dict) -> SiteStrategy:
         domain=domain,
         name=name,
         useragent=props.get("useragent", ""),
+        useragent_custom=props.get("useragent_custom", ""),
         referer=props.get("referer", ""),
         random_ip=props.get("random_ip", ""),
         allow_cookies=bool(props.get("allow_cookies")),
