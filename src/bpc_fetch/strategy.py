@@ -95,13 +95,13 @@ async def fetch_with_retries(
         client = httpx.AsyncClient(follow_redirects=True, timeout=TIMEOUT)
     try:
         html, status = await fetch_page(url, strategy, client)
-        if status == 200 and _has_content(html) and _has_full_article(html):
+        if status == 200 and _has_content(html):
             return html, status
 
         if not strategy or strategy.useragent != "googlebot":
             fallback = SiteStrategy(domain=(strategy.domain if strategy else ""), useragent="googlebot")
             html, status = await fetch_page(url, fallback, client)
-            if status == 200 and _has_content(html) and _has_full_article(html):
+            if status == 200 and _has_content(html):
                 return html, status
 
         # Browser fallback for block_js sites
@@ -110,7 +110,7 @@ async def fetch_with_retries(
             try:
                 from .browser import fetch_with_browser
                 browser_html, status = await fetch_with_browser(url, strategy)
-                if status == 200 and _has_content(browser_html) and _has_full_article(browser_html):
+                if status == 200 and _has_content(browser_html):
                     return browser_html, status
             except Exception:
                 pass
