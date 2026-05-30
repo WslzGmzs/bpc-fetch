@@ -146,11 +146,20 @@ python build/build_win.py
 This tool is built on top of the bypass logic from:
 
 - **[Bypass Paywalls Clean](https://gitflic.ru/project/magnolia1234/bypass-paywalls-chrome-clean)** by [magnolia1234](https://gitflic.ru/user/magnolia1234) — the original browser extension that provides the site database and bypass strategies. All credit for the paywall bypass research goes to the BPC project maintainers.
-- **[GenericAgent](https://github.com/lsdefine/GenericAgent)** — 本项目核心开发依仗 GA 提供的 AI 能力.
-- **[LINUX DO](https://linux.do)** — Community support and feedback.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
 The `data/sites.js` file is from the Bypass Paywalls Clean project (MIT License).
+
+---
+
+## 致谢
+
+本项目的开发 agent 能力由 [GenericAgent](https://github.com/lsdefine/GenericAgent) 提供。
+
+### 🚩 友情链接
+
+[![GenericAgent](https://img.shields.io/badge/Agent_Framework-GenericAgent-orange?style=for-the-badge&logo=github)](https://github.com/lsdefine/GenericAgent)
+[![LinuxDo](https://img.shields.io/badge/社区-LinuxDo-blue?style=for-the-badge)](https://linux.do/)
